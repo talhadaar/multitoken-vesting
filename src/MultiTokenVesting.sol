@@ -19,21 +19,12 @@ contract MultiTokenVesting is Ownable {
     using SafeERC20 for IERC20;
 
     struct VestingSchedule {
-        // Slot 0
-        address beneficiary; // 160 bits
-        uint64 start;        // 64 bits
-        // 32 bits remaining in this slot
-        
-        // Slot 1
-        address token;       // 160 bits
-        uint64 duration;     // 64 bits
-        uint64 cliff;        // 64 bits
-        // 32 bits remaining
-        
-        // Slot 2
-        uint256 totalAmount; 
-        
-        // Slot 3
+        address beneficiary;
+        uint64 start;
+        address token;
+        uint64 duration;
+        uint64 cliff;
+        uint256 totalAmount;
         uint256 amountClaimed;
     }
 
@@ -50,11 +41,7 @@ contract MultiTokenVesting is Ownable {
         uint256 duration
     );
 
-    event TokensClaimed(
-        address indexed beneficiary,
-        bytes32 indexed scheduleId,
-        uint256 amount
-    );
+    event TokensClaimed(address indexed beneficiary, bytes32 indexed scheduleId, uint256 amount);
 
     event ScheduleCompleted(bytes32 indexed scheduleId);
 
@@ -76,15 +63,17 @@ contract MultiTokenVesting is Ownable {
         IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
 
         // We push first, then get index. logic matches previous.
-        vestingSchedules.push(VestingSchedule({
-            beneficiary: _beneficiary,
-            token: _token,
-            start: _start,
-            duration: _duration,
-            cliff: _cliff,
-            totalAmount: _amount,
-            amountClaimed: 0
-        }));
+        vestingSchedules.push(
+            VestingSchedule({
+                beneficiary: _beneficiary,
+                token: _token,
+                start: _start,
+                duration: _duration,
+                cliff: _cliff,
+                totalAmount: _amount,
+                amountClaimed: 0
+            })
+        );
 
         uint256 index = vestingSchedules.length - 1;
         userScheduleIndices[_beneficiary].push(index);
@@ -138,13 +127,9 @@ contract MultiTokenVesting is Ownable {
         totalLockedPerToken[schedule.token] -= releasable;
 
         // Generate ID for event
-        bytes32 scheduleId = keccak256(abi.encodePacked(
-            schedule.beneficiary, 
-            schedule.token, 
-            schedule.start, 
-            schedule.duration, 
-            _index
-        ));
+        bytes32 scheduleId = keccak256(
+            abi.encodePacked(schedule.beneficiary, schedule.token, schedule.start, schedule.duration, _index)
+        );
 
         if (schedule.amountClaimed == schedule.totalAmount) {
             emit ScheduleCompleted(scheduleId);
@@ -152,8 +137,6 @@ contract MultiTokenVesting is Ownable {
 
         emit TokensClaimed(msg.sender, scheduleId, releasable);
 
-        // 2. Interact (Transfer)
-        // Since we updated state *before* this call, reentrancy is impossible on this schedule.
         IERC20(schedule.token).safeTransfer(schedule.beneficiary, releasable);
     }
 
