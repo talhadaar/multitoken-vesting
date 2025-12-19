@@ -10,7 +10,7 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     struct VestingSchedule {
-        // Unique ID for the schedule
+        // Unique ID for the schedule (for off-chain tracking)
         bytes32 scheduleId;
         // Address of the beneficiary
         address beneficiary;
@@ -22,7 +22,7 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         uint256 amountClaimed;
         // Start time of the vesting
         uint256 start;
-        // Cliff duration in seconds (time before tokens begin to vest)
+        // Cliff duration in seconds
         uint256 cliff;
         // Total duration of the vesting in seconds
         uint256 duration;
@@ -36,7 +36,7 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
     // Mapping from beneficiary to list of their schedule IDs (indices in the main array)
     mapping(address => uint256[]) private userScheduleIndices;
 
-    // Total amount of specific tokens locked in the contract to prevent over-allocation
+    // Total amount of specific tokens locked in the contract
     mapping(address => uint256) public totalLockedPerToken;
 
     event ScheduleCreated(
@@ -56,19 +56,17 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
 
     event ScheduleCompleted(bytes32 indexed scheduleId);
 
-    /**
-     * @dev Constructor sets the owner (admin) of the contract.
-     */
     constructor() Ownable(msg.sender) {}
 
     /**
-     * @dev Creates a new vesting schedule.
+     * @dev Creates a new vesting schedule and returns the global index.
      * @param _beneficiary Address of the user receiving tokens.
      * @param _token Address of the ERC20 token.
      * @param _amount Total tokens to vest.
      * @param _start Unix timestamp for the start of vesting.
      * @param _cliff Duration in seconds before vesting begins.
      * @param _duration Total duration of vesting in seconds.
+     * @return The index of the new schedule in the vestingSchedules array.
      */
     function createVestingSchedule(
         address _beneficiary,
@@ -77,7 +75,7 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         uint256 _start,
         uint256 _cliff,
         uint256 _duration
-    ) external onlyOwner nonReentrant {
+    ) external onlyOwner nonReentrant returns (uint256) {
         require(_beneficiary != address(0), "Beneficiary cannot be zero address");
         require(_token != address(0), "Token cannot be zero address");
         require(_amount > 0, "Amount must be > 0");
@@ -85,9 +83,9 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         require(_cliff <= _duration, "Cliff must be <= duration");
 
         // Transfer tokens from admin to contract
-        // NOTE: Admin must approve this contract to spend _amount of _token beforehand
         IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
 
+        // Generate a unique ID (mostly for event logs/off-chain tracking)
         bytes32 scheduleId = keccak256(
             abi.encodePacked(_beneficiary, _token, _start, _duration, vestingSchedules.length)
         );
@@ -105,15 +103,20 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         });
 
         vestingSchedules.push(schedule);
-        userScheduleIndices[_beneficiary].push(vestingSchedules.length - 1);
+        
+        uint256 newScheduleIndex = vestingSchedules.length - 1;
+        
+        userScheduleIndices[_beneficiary].push(newScheduleIndex);
+        
         totalLockedPerToken[_token] += _amount;
 
         emit ScheduleCreated(scheduleId, _beneficiary, _token, _amount, _start, _duration);
+
+        return newScheduleIndex;
     }
 
     /**
      * @dev Calculates the amount of tokens that have vested (unlocked) but not yet claimed.
-     * @param _scheduleIndex Index of the schedule in the vestingSchedules array.
      */
     function calculateReleasableAmount(uint256 _scheduleIndex) public view returns (uint256) {
         require(_scheduleIndex < vestingSchedules.length, "Invalid schedule index");
@@ -125,17 +128,14 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
 
         uint256 currentTime = block.timestamp;
 
-        // If before cliff or start, nothing is vested
         if (currentTime < schedule.start + schedule.cliff) {
             return 0;
         }
 
-        // If vesting period ended, all remaining tokens are releasable
         if (currentTime >= schedule.start + schedule.duration) {
             return schedule.totalAmount - schedule.amountClaimed;
         }
 
-        // Linear Vesting Calculation: (Total * (Now - Start)) / Duration
         uint256 timeFromStart = currentTime - schedule.start;
         uint256 vestedAmount = (schedule.totalAmount * timeFromStart) / schedule.duration;
 
@@ -144,7 +144,6 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
 
     /**
      * @dev Allows a user to claim their unlocked tokens for a specific schedule.
-     * @param _scheduleIndex Index of the schedule to claim from.
      */
     function claim(uint256 _scheduleIndex) external nonReentrant {
         require(_scheduleIndex < vestingSchedules.length, "Invalid schedule index");
@@ -159,7 +158,6 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         schedule.amountClaimed += releasable;
         totalLockedPerToken[schedule.token] -= releasable;
 
-        // Check if fully claimed
         if (schedule.amountClaimed == schedule.totalAmount) {
             schedule.claimed = true;
             emit ScheduleCompleted(schedule.scheduleId);
@@ -167,7 +165,6 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
 
         emit TokensClaimed(msg.sender, schedule.scheduleId, releasable);
 
-        // Transfer tokens
         IERC20(schedule.token).safeTransfer(schedule.beneficiary, releasable);
     }
 
@@ -180,7 +177,6 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
 
     /**
      * @dev Returns a vesting schedule by the user's index (not global index).
-     * Useful for frontend to iterate over a user's schedules.
      */
     function getScheduleByUserAtIndex(address _user, uint256 _index) external view returns (VestingSchedule memory) {
         require(_index < userScheduleIndices[_user].length, "Index out of bounds");
