@@ -90,7 +90,6 @@ contract MultiTokenVesting is Ownable {
         if (_index >= vestingSchedules.length) revert InvalidIndex();
         VestingSchedule storage schedule = vestingSchedules[_index];
 
-        // Infer 'claimed' status
         if (schedule.amountClaimed == schedule.totalAmount) {
             return 0;
         }
@@ -121,12 +120,9 @@ contract MultiTokenVesting is Ownable {
         uint256 releasable = calculateReleasableAmount(_index);
         if (releasable == 0) revert NothingToClaim();
 
-        // CHECKS-EFFECTS-INTERACTIONS PATTERN
-        // 1. Update State (Effect)
         schedule.amountClaimed += releasable;
         totalLockedPerToken[schedule.token] -= releasable;
 
-        // Generate ID for event
         bytes32 scheduleId = keccak256(
             abi.encodePacked(schedule.beneficiary, schedule.token, schedule.start, schedule.duration, _index)
         );
