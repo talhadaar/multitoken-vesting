@@ -1,42 +1,44 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract MultiTokenVesting is Ownable, ReentrancyGuard {
+// Custom Errors (Saves massive bytecode compared to require strings)
+error InvalidAddress();
+error InvalidAmount();
+error InvalidDuration();
+error InvalidCliff();
+error Unauthorized();
+error ScheduleClaimed();
+error NothingToClaim();
+error InvalidIndex();
+
+contract MultiTokenVesting is Ownable {
     using SafeERC20 for IERC20;
 
     struct VestingSchedule {
-        // Unique ID for the schedule (for off-chain tracking)
-        bytes32 scheduleId;
-        // Address of the beneficiary
-        address beneficiary;
-        // Address of the ERC20 token
-        address token;
-        // Total amount of tokens to be vested
-        uint256 totalAmount;
-        // Amount of tokens already claimed
+        // Slot 0
+        address beneficiary; // 160 bits
+        uint64 start;        // 64 bits
+        // 32 bits remaining in this slot
+        
+        // Slot 1
+        address token;       // 160 bits
+        uint64 duration;     // 64 bits
+        uint64 cliff;        // 64 bits
+        // 32 bits remaining
+        
+        // Slot 2
+        uint256 totalAmount; 
+        
+        // Slot 3
         uint256 amountClaimed;
-        // Start time of the vesting
-        uint256 start;
-        // Cliff duration in seconds
-        uint256 cliff;
-        // Total duration of the vesting in seconds
-        uint256 duration;
-        // Flag to indicate if all tokens have been claimed
-        bool claimed;
     }
 
-    // Array of all vesting schedules
     VestingSchedule[] public vestingSchedules;
-
-    // Mapping from beneficiary to list of their schedule IDs (indices in the main array)
     mapping(address => uint256[]) private userScheduleIndices;
-
-    // Total amount of specific tokens locked in the contract
     mapping(address => uint256) public totalLockedPerToken;
 
     event ScheduleCreated(
@@ -48,133 +50,119 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         uint256 duration
     );
 
-    event TokensClaimed(address indexed beneficiary, bytes32 indexed scheduleId, uint256 amount);
+    event TokensClaimed(
+        address indexed beneficiary,
+        bytes32 indexed scheduleId,
+        uint256 amount
+    );
 
     event ScheduleCompleted(bytes32 indexed scheduleId);
 
     constructor() Ownable(msg.sender) {}
 
-    /**
-     * @dev Creates a new vesting schedule and returns the global index.
-     * @param _beneficiary Address of the user receiving tokens.
-     * @param _token Address of the ERC20 token.
-     * @param _amount Total tokens to vest.
-     * @param _start Unix timestamp for the start of vesting.
-     * @param _cliff Duration in seconds before vesting begins.
-     * @param _duration Total duration of vesting in seconds.
-     * @return The index of the new schedule in the vestingSchedules array.
-     */
     function createVestingSchedule(
         address _beneficiary,
         address _token,
         uint256 _amount,
-        uint256 _start,
-        uint256 _cliff,
-        uint256 _duration
-    ) external onlyOwner nonReentrant returns (uint256) {
-        require(_beneficiary != address(0), "Beneficiary cannot be zero address");
-        require(_token != address(0), "Token cannot be zero address");
-        require(_amount > 0, "Amount must be > 0");
-        require(_duration > 0, "Duration must be > 0");
-        require(_cliff <= _duration, "Cliff must be <= duration");
+        uint64 _start,
+        uint64 _cliff,
+        uint64 _duration
+    ) external onlyOwner returns (uint256) {
+        if (_beneficiary == address(0) || _token == address(0)) revert InvalidAddress();
+        if (_amount == 0) revert InvalidAmount();
+        if (_duration == 0) revert InvalidDuration();
+        if (_cliff > _duration) revert InvalidCliff();
 
-        // Transfer tokens from admin to contract
         IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
 
-        // Generate a unique ID (mostly for event logs/off-chain tracking)
-        bytes32 scheduleId =
-            keccak256(abi.encodePacked(_beneficiary, _token, _start, _duration, vestingSchedules.length));
-
-        VestingSchedule memory schedule = VestingSchedule({
-            scheduleId: scheduleId,
+        // We push first, then get index. logic matches previous.
+        vestingSchedules.push(VestingSchedule({
             beneficiary: _beneficiary,
             token: _token,
-            totalAmount: _amount,
-            amountClaimed: 0,
             start: _start,
-            cliff: _cliff,
             duration: _duration,
-            claimed: false
-        });
+            cliff: _cliff,
+            totalAmount: _amount,
+            amountClaimed: 0
+        }));
 
-        vestingSchedules.push(schedule);
-
-        uint256 newScheduleIndex = vestingSchedules.length - 1;
-
-        userScheduleIndices[_beneficiary].push(newScheduleIndex);
-
+        uint256 index = vestingSchedules.length - 1;
+        userScheduleIndices[_beneficiary].push(index);
         totalLockedPerToken[_token] += _amount;
 
+        // Generate ID on the fly for the event, but don't store it
+        bytes32 scheduleId = keccak256(abi.encodePacked(_beneficiary, _token, _start, _duration, index));
         emit ScheduleCreated(scheduleId, _beneficiary, _token, _amount, _start, _duration);
 
-        return newScheduleIndex;
+        return index;
     }
 
-    /**
-     * @dev Calculates the amount of tokens that have vested (unlocked) but not yet claimed.
-     */
-    function calculateReleasableAmount(uint256 _scheduleIndex) public view returns (uint256) {
-        require(_scheduleIndex < vestingSchedules.length, "Invalid schedule index");
-        VestingSchedule storage schedule = vestingSchedules[_scheduleIndex];
+    function calculateReleasableAmount(uint256 _index) public view returns (uint256) {
+        if (_index >= vestingSchedules.length) revert InvalidIndex();
+        VestingSchedule storage schedule = vestingSchedules[_index];
 
-        if (schedule.claimed) {
+        // Infer 'claimed' status
+        if (schedule.amountClaimed == schedule.totalAmount) {
             return 0;
         }
 
         uint256 currentTime = block.timestamp;
-
         if (currentTime < schedule.start + schedule.cliff) {
             return 0;
         }
 
+        uint256 vestedAmount;
         if (currentTime >= schedule.start + schedule.duration) {
-            return schedule.totalAmount - schedule.amountClaimed;
+            vestedAmount = schedule.totalAmount;
+        } else {
+            uint256 timeFromStart = currentTime - schedule.start;
+            vestedAmount = (schedule.totalAmount * timeFromStart) / schedule.duration;
         }
-
-        uint256 timeFromStart = currentTime - schedule.start;
-        uint256 vestedAmount = (schedule.totalAmount * timeFromStart) / schedule.duration;
 
         return vestedAmount - schedule.amountClaimed;
     }
 
-    /**
-     * @dev Allows a user to claim their unlocked tokens for a specific schedule.
-     */
-    function claim(uint256 _scheduleIndex) external nonReentrant {
-        require(_scheduleIndex < vestingSchedules.length, "Invalid schedule index");
-        VestingSchedule storage schedule = vestingSchedules[_scheduleIndex];
+    function claim(uint256 _index) external {
+        if (_index >= vestingSchedules.length) revert InvalidIndex();
+        VestingSchedule storage schedule = vestingSchedules[_index];
 
-        require(msg.sender == schedule.beneficiary, "Only beneficiary can claim");
-        require(!schedule.claimed, "Schedule fully claimed");
+        if (msg.sender != schedule.beneficiary) revert Unauthorized();
+        if (schedule.amountClaimed == schedule.totalAmount) revert ScheduleClaimed();
 
-        uint256 releasable = calculateReleasableAmount(_scheduleIndex);
-        require(releasable > 0, "No tokens due for claiming");
+        uint256 releasable = calculateReleasableAmount(_index);
+        if (releasable == 0) revert NothingToClaim();
 
+        // CHECKS-EFFECTS-INTERACTIONS PATTERN
+        // 1. Update State (Effect)
         schedule.amountClaimed += releasable;
         totalLockedPerToken[schedule.token] -= releasable;
 
+        // Generate ID for event
+        bytes32 scheduleId = keccak256(abi.encodePacked(
+            schedule.beneficiary, 
+            schedule.token, 
+            schedule.start, 
+            schedule.duration, 
+            _index
+        ));
+
         if (schedule.amountClaimed == schedule.totalAmount) {
-            schedule.claimed = true;
-            emit ScheduleCompleted(schedule.scheduleId);
+            emit ScheduleCompleted(scheduleId);
         }
 
-        emit TokensClaimed(msg.sender, schedule.scheduleId, releasable);
+        emit TokensClaimed(msg.sender, scheduleId, releasable);
 
+        // 2. Interact (Transfer)
+        // Since we updated state *before* this call, reentrancy is impossible on this schedule.
         IERC20(schedule.token).safeTransfer(schedule.beneficiary, releasable);
     }
 
-    /**
-     * @dev Returns the count of vesting schedules for a specific user.
-     */
     function getScheduleCountByUser(address _user) external view returns (uint256) {
         return userScheduleIndices[_user].length;
     }
 
-    /**
-     * @dev Returns a vesting schedule by the user's index (not global index).
-     */
     function getScheduleByUserAtIndex(address _user, uint256 _index) external view returns (VestingSchedule memory) {
-        require(_index < userScheduleIndices[_user].length, "Index out of bounds");
+        if (_index >= userScheduleIndices[_user].length) revert InvalidIndex();
         uint256 globalIndex = userScheduleIndices[_user][_index];
         return vestingSchedules[globalIndex];
     }
