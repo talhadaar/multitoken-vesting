@@ -48,11 +48,7 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         uint256 duration
     );
 
-    event TokensClaimed(
-        address indexed beneficiary,
-        bytes32 indexed scheduleId,
-        uint256 amount
-    );
+    event TokensClaimed(address indexed beneficiary, bytes32 indexed scheduleId, uint256 amount);
 
     event ScheduleCompleted(bytes32 indexed scheduleId);
 
@@ -86,9 +82,8 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
 
         // Generate a unique ID (mostly for event logs/off-chain tracking)
-        bytes32 scheduleId = keccak256(
-            abi.encodePacked(_beneficiary, _token, _start, _duration, vestingSchedules.length)
-        );
+        bytes32 scheduleId =
+            keccak256(abi.encodePacked(_beneficiary, _token, _start, _duration, vestingSchedules.length));
 
         VestingSchedule memory schedule = VestingSchedule({
             scheduleId: scheduleId,
@@ -103,11 +98,11 @@ contract MultiTokenVesting is Ownable, ReentrancyGuard {
         });
 
         vestingSchedules.push(schedule);
-        
+
         uint256 newScheduleIndex = vestingSchedules.length - 1;
-        
+
         userScheduleIndices[_beneficiary].push(newScheduleIndex);
-        
+
         totalLockedPerToken[_token] += _amount;
 
         emit ScheduleCreated(scheduleId, _beneficiary, _token, _amount, _start, _duration);

@@ -8,6 +8,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 // Mock Token for testing
 contract MockERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
+
     function mint(address to, uint256 amount) public {
         _mint(to, amount);
     }
@@ -42,9 +43,7 @@ contract MultiTokenVestingTest is Test {
 
     function test_CreateVestingSchedule() public {
         uint256 start = block.timestamp;
-        uint256 index = vesting.createVestingSchedule(
-            beneficiary, address(token), AMOUNT, start, CLIFF, DURATION
-        );
+        uint256 index = vesting.createVestingSchedule(beneficiary, address(token), AMOUNT, start, CLIFF, DURATION);
 
         assertEq(index, 0); // First schedule should be index 0
         assertEq(vesting.getScheduleCountByUser(beneficiary), 1);
@@ -102,7 +101,7 @@ contract MultiTokenVestingTest is Test {
         vm.stopPrank();
 
         assertEq(token.balanceOf(beneficiary), AMOUNT);
-        
+
         // Check claimed flag
         (,,,,,,,, bool claimed) = vesting.vestingSchedules(index);
         assertTrue(claimed);
@@ -118,7 +117,7 @@ contract MultiTokenVestingTest is Test {
         vesting.claim(index);
 
         assertEq(token.balanceOf(beneficiary), AMOUNT / 2);
-        
+
         // Check claimed flag is FALSE
         (,,,,,,,, bool claimed) = vesting.vestingSchedules(index);
         assertFalse(claimed);
@@ -127,7 +126,7 @@ contract MultiTokenVestingTest is Test {
     function test_Revert_Claim_Unauthorized() public {
         uint256 start = block.timestamp;
         uint256 index = vesting.createVestingSchedule(beneficiary, address(token), AMOUNT, start, CLIFF, DURATION);
-        
+
         vm.warp(start + DURATION);
 
         vm.prank(unauthorizedUser);
@@ -143,7 +142,7 @@ contract MultiTokenVestingTest is Test {
 
         vm.startPrank(beneficiary);
         vesting.claim(index); // First claim succeeds
-        
+
         vm.expectRevert("Schedule fully claimed");
         vesting.claim(index); // Second claim fails
         vm.stopPrank();
