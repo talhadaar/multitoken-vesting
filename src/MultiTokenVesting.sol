@@ -14,7 +14,6 @@ error Unauthorized();
 error ScheduleClaimed();
 error NothingToClaim();
 error InvalidIndex();
-// RENAMED to avoid conflict with the Event
 error ScheduleWasRevoked();
 
 contract MultiTokenVesting is Ownable {
@@ -151,7 +150,6 @@ contract MultiTokenVesting is Ownable {
         if (_index >= vestingSchedules.length) revert InvalidIndex();
         VestingSchedule storage schedule = vestingSchedules[_index];
 
-        // UPDATED ERROR NAME
         if (schedule.revoked) revert ScheduleWasRevoked();
         if (schedule.claimed) revert ScheduleClaimed();
 

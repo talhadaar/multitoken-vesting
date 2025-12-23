@@ -89,7 +89,7 @@ contract MultiTokenVestingTest is Test {
         vesting.revoke(index);
 
         vm.prank(beneficiary);
-        // FIX: Use the new error name here
+
         vm.expectRevert(ScheduleWasRevoked.selector);
         vesting.claim(index);
     }
@@ -109,5 +109,44 @@ contract MultiTokenVestingTest is Test {
         vm.prank(otherUser);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, otherUser));
         vesting.revoke(index);
+    }
+
+    function test_Revoke_PartiallyVested() public {
+        uint256 index = vesting.createVestingSchedule(
+            beneficiary,
+            address(token),
+            AMOUNT, // 1000 Tokens
+            START,
+            0, // No cliff for simpler math
+            DURATION // 1000 Seconds
+        );
+
+        vm.warp(START + (DURATION / 2));
+
+        uint256 initialOwnerBalance = token.balanceOf(owner);
+        uint256 initialBeneficiaryBalance = token.balanceOf(beneficiary);
+
+        vesting.revoke(index);
+
+        // Check Balances
+        assertEq(
+            token.balanceOf(beneficiary),
+            initialBeneficiaryBalance + (AMOUNT / 2),
+            "Beneficiary should receive exactly 50% of tokens"
+        );
+
+        assertEq(
+            token.balanceOf(owner), initialOwnerBalance + (AMOUNT / 2), "Owner should receive the unvested 50% refund"
+        );
+
+        // Check Schedule State
+        (,, bool revoked, bool claimed,,,,, uint256 claimedAmount) = vesting.vestingSchedules(index);
+
+        assertTrue(revoked, "Schedule should be marked as revoked");
+        assertFalse(claimed, "Schedule should NOT be marked as claimed (it was revoked)");
+        assertEq(claimedAmount, AMOUNT / 2, "Amount claimed in struct should equal vested amount");
+
+        // Check Contract Accounting
+        assertEq(vesting.totalLockedPerToken(address(token)), 0, "Total locked should be cleared");
     }
 }
