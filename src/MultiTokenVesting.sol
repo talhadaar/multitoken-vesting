@@ -14,17 +14,30 @@ error Unauthorized();
 error ScheduleClaimed();
 error NothingToClaim();
 error InvalidIndex();
+// RENAMED to avoid conflict with the Event
+error ScheduleWasRevoked();
 
 contract MultiTokenVesting is Ownable {
     using SafeERC20 for IERC20;
 
     struct VestingSchedule {
+        // Slot 0: 30 bytes
         address beneficiary;
         uint64 start;
+        bool revoked;
+        bool claimed;
+
+        // Slot 1: 28 bytes
         address token;
         uint64 duration;
+
+        // Slot 2: 8 bytes
         uint64 cliff;
+
+        // Slot 3: 32 bytes
         uint256 totalAmount;
+
+        // Slot 4: 32 bytes
         uint256 amountClaimed;
     }
 
@@ -42,8 +55,8 @@ contract MultiTokenVesting is Ownable {
     );
 
     event TokensClaimed(address indexed beneficiary, uint256 indexed scheduleIndex, uint256 amount);
-
     event ScheduleCompleted(uint256 indexed scheduleIndex);
+    event ScheduleRevoked(uint256 indexed scheduleIndex, uint256 amountRevoked, uint256 amountVested);
 
     constructor() Ownable(msg.sender) {}
 
@@ -65,8 +78,10 @@ contract MultiTokenVesting is Ownable {
         vestingSchedules.push(
             VestingSchedule({
                 beneficiary: _beneficiary,
-                token: _token,
                 start: _start,
+                revoked: false,
+                claimed: false,
+                token: _token,
                 duration: _duration,
                 cliff: _cliff,
                 totalAmount: _amount,
@@ -87,7 +102,7 @@ contract MultiTokenVesting is Ownable {
         if (_index >= vestingSchedules.length) revert InvalidIndex();
         VestingSchedule storage schedule = vestingSchedules[_index];
 
-        if (schedule.amountClaimed == schedule.totalAmount) {
+        if (schedule.revoked || schedule.claimed) {
             return 0;
         }
 
@@ -112,7 +127,9 @@ contract MultiTokenVesting is Ownable {
         VestingSchedule storage schedule = vestingSchedules[_index];
 
         if (msg.sender != schedule.beneficiary) revert Unauthorized();
-        if (schedule.amountClaimed == schedule.totalAmount) revert ScheduleClaimed();
+
+        if (schedule.revoked) revert ScheduleWasRevoked();
+        if (schedule.claimed) revert ScheduleClaimed();
 
         uint256 releasable = calculateReleasableAmount(_index);
         if (releasable == 0) revert NothingToClaim();
@@ -121,12 +138,40 @@ contract MultiTokenVesting is Ownable {
         totalLockedPerToken[schedule.token] -= releasable;
 
         if (schedule.amountClaimed == schedule.totalAmount) {
+            schedule.claimed = true;
             emit ScheduleCompleted(_index);
         }
 
         emit TokensClaimed(msg.sender, _index, releasable);
 
         IERC20(schedule.token).safeTransfer(schedule.beneficiary, releasable);
+    }
+
+    function revoke(uint256 _index) external onlyOwner {
+        if (_index >= vestingSchedules.length) revert InvalidIndex();
+        VestingSchedule storage schedule = vestingSchedules[_index];
+
+        // UPDATED ERROR NAME
+        if (schedule.revoked) revert ScheduleWasRevoked();
+        if (schedule.claimed) revert ScheduleClaimed();
+
+        uint256 releasable = calculateReleasableAmount(_index);
+        uint256 refundAmount = schedule.totalAmount - (schedule.amountClaimed + releasable);
+
+        schedule.revoked = true;
+        totalLockedPerToken[schedule.token] -= (releasable + refundAmount);
+
+        if (releasable > 0) {
+            schedule.amountClaimed += releasable;
+            emit TokensClaimed(schedule.beneficiary, _index, releasable);
+            IERC20(schedule.token).safeTransfer(schedule.beneficiary, releasable);
+        }
+
+        if (refundAmount > 0) {
+            IERC20(schedule.token).safeTransfer(msg.sender, refundAmount);
+        }
+
+        emit ScheduleRevoked(_index, refundAmount, releasable);
     }
 
     function getScheduleCountByUser(address _user) external view returns (uint256) {

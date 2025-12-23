@@ -1,38 +1,29 @@
 # MultiTokenVesting
 
-A gas-optimized, multi-token vesting contract written in Solidity. This contract allows an admin (Owner) to create linear vesting schedules with optional cliffs for multiple beneficiaries across different ERC20 tokens.
+A gas-optimized, multi-token vesting contract written in Solidity. This contract allows an admin (Owner) to create revocable, linear vesting schedules with optional cliffs for multiple beneficiaries across different ERC20 tokens.
 
 ## ⚡ Features
 
 * **Multi-Token Support:** One contract can handle vesting for any number of different ERC20 tokens (USDC, WETH, UNI, etc.).
+* **Revocable:** The Owner can revoke a schedule at any time.
+* **Vested** tokens are immediately sent to the beneficiary.
+* **Unvested** tokens are refunded to the Owner.
+
+
 * **Gas Optimized:**
-* Uses **Custom Errors** (`error InvalidIndex()`) instead of expensive string revert messages.
-* **Direct Indexing:** Removes redundant `keccak256` ID hashing; uses array indices for O(1) gas efficiency during claims.
+* **Packed Structs:** Booleans (`revoked`, `claimed`) and addresses are tightly packed to save storage costs.
+* **Custom Errors:** Uses `error ScheduleWasRevoked()` instead of expensive string revert messages.
+* **Direct Indexing:** Uses array indices for O(1) gas efficiency during claims.
 
 
 * **Linear Vesting:** Tokens vest linearly over a duration, starting after a defined cliff.
-* **Safety:**
-* Uses OpenZeppelin's `SafeERC20` for reliable token transfers.
-* Protected by `Ownable` for administrative actions.
-* Checks for zero-address and zero-amount inputs.
-
-
 
 ## 🪙 Supported Tokens
 
 This contract is designed exclusively for **ERC20 tokens**.
 
 * **Supported:** Any standard ERC20 token (e.g., USDC, UNI, LINK, WETH).
-* **Not Supported:** Native chain currencies (e.g., ETH, MATIC, BNB, SOL) are **not supported directly**.
-
-### How to Vest Native Tokens (ETH, MATIC, etc.)
-
-To vest native assets, you must **wrap** them first. This ensures maximum security and compatibility with the contract's standard logic.
-
-1. **Wrap:** Convert your Native ETH to **Wrapped ETH (WETH)** via the canonical WETH contract on your chain.
-2. **Approve:** Approve the Vesting contract to spend your WETH.
-3. **Create:** Call `createVestingSchedule` using the WETH contract address.
-4. **Claim:** Beneficiaries claim WETH, which they can unwrap back to ETH 1:1 at any time.
+* **Not Supported:** Native chain currencies (e.g., AGNG, PEAQ) are **not supported directly**.
 
 ---
 
@@ -50,9 +41,6 @@ The vesting logic follows a standard linear release schedule:
 VestedAmount = (TotalAmount * (CurrentTime - StartTime)) / Duration
 
 ```
-
-* **Cliff:** A duration (in seconds) during which no tokens can be claimed. Once the cliff passes, the tokens for that elapsed time vest immediately.
-* **Duration:** The total time (in seconds) for the vesting period.
 
 ### Example Scenario
 
@@ -112,59 +100,47 @@ forge test -vv
 Only the contract owner can create new schedules. The owner must have approved the Vesting Contract to spend the tokens beforehand.
 
 ```solidity
-// Params:
-// 1. Beneficiary Address
-// 2. Token Address
-// 3. Amount (in Wei)
-// 4. Start Timestamp (Unix Epoch)
-// 5. Cliff Duration (Seconds)
-// 6. Total Duration (Seconds)
-
 vestingContract.createVestingSchedule(
-    0x123...,           // Beneficiary
+    0xBeneficiary...,   // Beneficiary Address
     0xToken...,         // Token Address
-    1000 * 10**18,      // 1000 Tokens
-    block.timestamp,    // Start Now
-    2592000,            // 30 Day Cliff
-    31536000            // 1 Year Duration
+    1000 * 10**18,      // Amount
+    block.timestamp,    // Start Time
+    2592000,            // Cliff Duration (e.g., 30 days)
+    31536000            // Total Duration (e.g., 1 year)
 );
 
 ```
-
-* **Returns:** `uint256 index` (The ID of the schedule).
-* **Emits:** `ScheduleCreated(uint256 indexed scheduleIndex, ...)`
 
 ### 2. Claiming Tokens (Beneficiary Only)
 
 Beneficiaries claim their available tokens by passing the `scheduleIndex`.
 
 ```solidity
-// The index is the one emitted in the ScheduleCreated event
+// The index is emitted in the ScheduleCreated event
 uint256 scheduleIndex = 0; 
-
 vestingContract.claim(scheduleIndex);
 
 ```
 
-* **Emits:** `TokensClaimed(address indexed beneficiary, uint256 indexed scheduleIndex, uint256 amount)`
+### 3. Revoking a Schedule (Owner Only)
 
-### 3. Reading Data
-
-**Get Releasable Amount:**
-Check how many tokens are currently waiting to be claimed.
+The owner can stop a schedule early.
 
 ```solidity
-uint256 amount = vestingContract.calculateReleasableAmount(scheduleIndex);
+vestingContract.revoke(scheduleIndex);
 
 ```
 
-**Get User's Schedules:**
+* **Result:** The beneficiary receives all tokens earned *up to this exact second*. The remaining tokens are sent back to the Owner's wallet.
+
+### 4. Reading Data
 
 ```solidity
-// Get total count of schedules for a user
-uint256 count = vestingContract.getScheduleCountByUser(userAddress);
+// Check claimable amount
+uint256 amount = vestingContract.calculateReleasableAmount(scheduleIndex);
 
-// Get specific schedule details
+// Get User's Schedules
+uint256 count = vestingContract.getScheduleCountByUser(userAddress);
 VestingSchedule memory schedule = vestingContract.getScheduleByUserAtIndex(userAddress, 0);
 
 ```
@@ -175,15 +151,19 @@ VestingSchedule memory schedule = vestingContract.getScheduleByUserAtIndex(userA
 
 ### Structs
 
+The `VestingSchedule` struct is packed to minimize storage costs.
+
 ```solidity
 struct VestingSchedule {
-    address beneficiary;
-    uint64 start;
-    address token;
-    uint64 duration;
-    uint64 cliff;
-    uint256 totalAmount;
-    uint256 amountClaimed;
+    address beneficiary;    // Address of the user
+    uint64 start;           // Start timestamp
+    bool revoked;           // Has the schedule been revoked?
+    bool claimed;           // Have all tokens been claimed?
+    address token;          // Token contract address
+    uint64 duration;        // Duration of vesting in seconds
+    uint64 cliff;           // Cliff duration in seconds
+    uint256 totalAmount;    // Total tokens allocated
+    uint256 amountClaimed;  // Total tokens withdrawn so far
 }
 
 ```
@@ -196,26 +176,24 @@ struct VestingSchedule {
 | `InvalidAmount` | Vesting amount is 0. |
 | `InvalidDuration` | Duration is 0. |
 | `InvalidCliff` | Cliff is longer than the Duration. |
-| `Unauthorized` | Caller is not the beneficiary of the schedule. |
+| `Unauthorized` | Caller is not the beneficiary. |
 | `ScheduleClaimed` | All tokens have already been claimed. |
 | `NothingToClaim` | Current releasable amount is 0 (e.g., inside cliff). |
 | `InvalidIndex` | The provided schedule index does not exist. |
+| `ScheduleWasRevoked` | The schedule has been revoked and is closed. |
 
 ---
 
 ## 🛡 Security & Audit Info
 
 * **Solidity Version:** `^0.8.20`
-* **SafeMath Not Required:** This contract uses Solidity 0.8.0+, which includes built-in overflow/underflow protection for arithmetic operations. External `SafeMath` libraries are redundant and would waste gas.
+* **Centralization Risk:** This contract allows the Owner to **revoke** schedules. This means beneficiaries must trust the Owner not to revoke schedules maliciously.
+* **SafeMath:** Not required (Solidity 0.8+ has built-in overflow protection).
 * **SafeERC20:** Used for all token transfers to handle non-compliant ERC20s (tokens that don't return bools).
-* **Reentrancy:** Not explicitly used (no `ReentrancyGuard`) because `claim` follows the **Checks-Effects-Interactions** pattern:
-1. **Check:** Releasable > 0.
-2. **Effect:** `schedule.amountClaimed` is updated *before* transfer.
-3. **Interaction:** Tokens are transferred.
-
-
+* **Reentrancy:** The `claim` function follows the **Checks-Effects-Interactions** pattern, updating state before transferring tokens.
 
 ---
 
 ## 📜 License
-### TODO
+
+SPDX-License-Identifier: MIT
