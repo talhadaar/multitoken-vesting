@@ -36,6 +36,7 @@ contract MultiTokenVestingTest is Test {
     event TokensClaimed(address indexed beneficiary, uint256 indexed scheduleIndex, uint256 amount);
     event ScheduleCompleted(uint256 indexed scheduleIndex);
     event ScheduleRevoked(uint256 indexed scheduleIndex, uint256 amountRevoked, uint256 amountVested);
+    event ExcessWithdrawn(address indexed token, uint256 amount);
 
     function setUp() public {
         owner = address(this);
@@ -148,5 +149,49 @@ contract MultiTokenVestingTest is Test {
 
         // Check Contract Accounting
         assertEq(vesting.totalLockedPerToken(address(token)), 0, "Total locked should be cleared");
+    }
+
+    function test_WithdrawExcess_Success() public {
+        vesting.createVestingSchedule(beneficiary, address(token), AMOUNT, START, 0, DURATION);
+
+        assertEq(token.balanceOf(address(vesting)), AMOUNT);
+        assertEq(vesting.totalLockedPerToken(address(token)), AMOUNT);
+
+        // Accidental transfer of extra tokens to contract
+        uint256 excessAmount = 500 ether;
+        token.transfer(address(vesting), excessAmount);
+
+        // Contract now holds 1500, but only 1000 are locked
+        assertEq(token.balanceOf(address(vesting)), AMOUNT + excessAmount);
+
+        // Withdraw Excess
+        uint256 ownerBalanceBefore = token.balanceOf(owner);
+
+        vm.expectEmit(true, false, false, true);
+        emit ExcessWithdrawn(address(token), excessAmount);
+
+        vesting.withdrawExcess(address(token));
+
+        // Owner should get exactly the 500 excess back
+        assertEq(token.balanceOf(owner), ownerBalanceBefore + excessAmount);
+
+        // Contract should still hold the 1000 locked tokens
+        assertEq(token.balanceOf(address(vesting)), AMOUNT);
+        assertEq(vesting.totalLockedPerToken(address(token)), AMOUNT);
+    }
+
+    function test_Revert_WithdrawExcess_WhenNoneExists() public {
+        vesting.createVestingSchedule(beneficiary, address(token), AMOUNT, START, 0, DURATION);
+
+        vm.expectRevert(InsufficientExcessBalance.selector);
+        vesting.withdrawExcess(address(token));
+    }
+
+    function test_Revert_WithdrawExcess_Unauthorized() public {
+        token.transfer(address(vesting), 100 ether);
+
+        vm.prank(otherUser);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, otherUser));
+        vesting.withdrawExcess(address(token));
     }
 }

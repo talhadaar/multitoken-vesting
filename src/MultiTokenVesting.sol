@@ -15,28 +15,20 @@ error ScheduleClaimed();
 error NothingToClaim();
 error InvalidIndex();
 error ScheduleWasRevoked();
+error InsufficientExcessBalance();
 
 contract MultiTokenVesting is Ownable {
     using SafeERC20 for IERC20;
 
     struct VestingSchedule {
-        // Slot 0: 30 bytes
         address beneficiary;
         uint64 start;
         bool revoked;
         bool claimed;
-
-        // Slot 1: 28 bytes
         address token;
         uint64 duration;
-
-        // Slot 2: 8 bytes
         uint64 cliff;
-
-        // Slot 3: 32 bytes
         uint256 totalAmount;
-
-        // Slot 4: 32 bytes
         uint256 amountClaimed;
     }
 
@@ -56,6 +48,7 @@ contract MultiTokenVesting is Ownable {
     event TokensClaimed(address indexed beneficiary, uint256 indexed scheduleIndex, uint256 amount);
     event ScheduleCompleted(uint256 indexed scheduleIndex);
     event ScheduleRevoked(uint256 indexed scheduleIndex, uint256 amountRevoked, uint256 amountVested);
+    event ExcessWithdrawn(address indexed token, uint256 amount);
 
     constructor() Ownable(msg.sender) {}
 
@@ -126,7 +119,6 @@ contract MultiTokenVesting is Ownable {
         VestingSchedule storage schedule = vestingSchedules[_index];
 
         if (msg.sender != schedule.beneficiary) revert Unauthorized();
-
         if (schedule.revoked) revert ScheduleWasRevoked();
         if (schedule.claimed) revert ScheduleClaimed();
 
@@ -170,6 +162,22 @@ contract MultiTokenVesting is Ownable {
         }
 
         emit ScheduleRevoked(_index, refundAmount, releasable);
+    }
+
+    /**
+     * @notice Withdraws any tokens that are NOT locked in vesting schedules.
+     * Useful if tokens are accidentally sent to the contract address.
+     */
+    function withdrawExcess(address _token) external onlyOwner {
+        uint256 contractBalance = IERC20(_token).balanceOf(address(this));
+        uint256 lockedAmount = totalLockedPerToken[_token];
+
+        if (contractBalance <= lockedAmount) revert InsufficientExcessBalance();
+
+        uint256 excess = contractBalance - lockedAmount;
+
+        emit ExcessWithdrawn(_token, excess);
+        IERC20(_token).safeTransfer(msg.sender, excess);
     }
 
     function getScheduleCountByUser(address _user) external view returns (uint256) {
