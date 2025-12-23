@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-// Custom Errors (Saves massive bytecode compared to require strings)
+// Custom Errors
 error InvalidAddress();
 error InvalidAmount();
 error InvalidDuration();
@@ -33,7 +33,7 @@ contract MultiTokenVesting is Ownable {
     mapping(address => uint256) public totalLockedPerToken;
 
     event ScheduleCreated(
-        bytes32 indexed scheduleId,
+        uint256 indexed scheduleIndex,
         address indexed beneficiary,
         address indexed token,
         uint256 amount,
@@ -41,9 +41,9 @@ contract MultiTokenVesting is Ownable {
         uint256 duration
     );
 
-    event TokensClaimed(address indexed beneficiary, bytes32 indexed scheduleId, uint256 amount);
+    event TokensClaimed(address indexed beneficiary, uint256 indexed scheduleIndex, uint256 amount);
 
-    event ScheduleCompleted(bytes32 indexed scheduleId);
+    event ScheduleCompleted(uint256 indexed scheduleIndex);
 
     constructor() Ownable(msg.sender) {}
 
@@ -62,7 +62,6 @@ contract MultiTokenVesting is Ownable {
 
         IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
 
-        // We push first, then get index. logic matches previous.
         vestingSchedules.push(
             VestingSchedule({
                 beneficiary: _beneficiary,
@@ -79,9 +78,7 @@ contract MultiTokenVesting is Ownable {
         userScheduleIndices[_beneficiary].push(index);
         totalLockedPerToken[_token] += _amount;
 
-        // Generate ID on the fly for the event, but don't store it
-        bytes32 scheduleId = keccak256(abi.encodePacked(_beneficiary, _token, _start, _duration, index));
-        emit ScheduleCreated(scheduleId, _beneficiary, _token, _amount, _start, _duration);
+        emit ScheduleCreated(index, _beneficiary, _token, _amount, _start, _duration);
 
         return index;
     }
@@ -123,15 +120,11 @@ contract MultiTokenVesting is Ownable {
         schedule.amountClaimed += releasable;
         totalLockedPerToken[schedule.token] -= releasable;
 
-        bytes32 scheduleId = keccak256(
-            abi.encodePacked(schedule.beneficiary, schedule.token, schedule.start, schedule.duration, _index)
-        );
-
         if (schedule.amountClaimed == schedule.totalAmount) {
-            emit ScheduleCompleted(scheduleId);
+            emit ScheduleCompleted(_index);
         }
 
-        emit TokensClaimed(msg.sender, scheduleId, releasable);
+        emit TokensClaimed(msg.sender, _index, releasable);
 
         IERC20(schedule.token).safeTransfer(schedule.beneficiary, releasable);
     }
