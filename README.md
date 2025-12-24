@@ -16,7 +16,11 @@ A gas-optimized, multi-token vesting contract written in Solidity. This contract
 * **Direct Indexing:** Uses array indices for O(1) gas efficiency during claims.
 
 
-* **Linear Vesting:** Tokens vest linearly over a duration, starting after a defined cliff.
+* **Safety Features:**
+* **Solvency Check:** Tokens are transferred into the contract *at creation*, guaranteeing funds are available.
+* **Excess Withdrawal:** Owner can recover accidentally sent tokens that are not part of any schedule.
+
+
 
 ## 🪙 Supported Tokens
 
@@ -97,7 +101,19 @@ forge test -vv
 
 ### 1. Creating a Schedule (Owner Only)
 
-Only the contract owner can create new schedules. The owner must have approved the Vesting Contract to spend the tokens beforehand.
+Before creating a schedule, you **must approve** the vesting contract to spend your tokens.
+
+**Step A: Approve Tokens**
+Call `approve()` on the Token Contract (e.g., USDC).
+
+```solidity
+// Call this on the TOKEN contract, NOT the vesting contract
+IERC20(tokenAddress).approve(vestingContractAddress, amount);
+
+```
+
+**Step B: Create Schedule**
+Call `createVestingSchedule` on the Vesting Contract. The contract will pull the tokens from your wallet automatically.
 
 ```solidity
 vestingContract.createVestingSchedule(
@@ -133,15 +149,13 @@ vestingContract.revoke(scheduleIndex);
 
 * **Result:** The beneficiary receives all tokens earned *up to this exact second*. The remaining tokens are sent back to the Owner's wallet.
 
-### 4. Reading Data
+### 4. Withdraw Excess (Owner Only)
+
+If you accidentally send tokens to the contract without creating a schedule, you can recover them.
 
 ```solidity
-// Check claimable amount
-uint256 amount = vestingContract.calculateReleasableAmount(scheduleIndex);
-
-// Get User's Schedules
-uint256 count = vestingContract.getScheduleCountByUser(userAddress);
-VestingSchedule memory schedule = vestingContract.getScheduleByUserAtIndex(userAddress, 0);
+// Withdraws only tokens that are NOT locked in active schedules
+vestingContract.withdrawExcess(tokenAddress);
 
 ```
 
@@ -181,6 +195,7 @@ struct VestingSchedule {
 | `NothingToClaim` | Current releasable amount is 0 (e.g., inside cliff). |
 | `InvalidIndex` | The provided schedule index does not exist. |
 | `ScheduleWasRevoked` | The schedule has been revoked and is closed. |
+| `InsufficientExcessBalance` | Attempted to withdraw tokens that are locked in vesting. |
 
 ---
 
