@@ -115,6 +115,8 @@ IERC20(tokenAddress).approve(vestingContractAddress, amount);
 **Step B: Create Schedule**
 Call `createVestingSchedule` on the Vesting Contract. The contract will pull the tokens from your wallet automatically.
 
+> Currently, there is no validation to ensure that schedule.start is set in the future. This could lead to incorrect vestedAmount calculation in calculateReleasableAmount. Please ensure a valid start timing.
+
 ```solidity
 vestingContract.createVestingSchedule(
     0xBeneficiary...,   // Beneficiary Address
